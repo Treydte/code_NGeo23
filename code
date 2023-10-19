@@ -1,0 +1,246 @@
+############################################################
+### CUSTOM CODE FOR GROUPING STABLE ISOTOPE CHRONOLOGIES ###
+############################################################
+
+#The following code has been developed specifically for the
+#analyses underlying Treydte et al. 2023, Nature Geosciences.
+#Please note that analyses relying solely on basic R functions
+#are not repeated herein.
+
+#Contact: Kerstin Treydte; kerstin.treydte@wsl.ch
+
+
+###################################################
+### 1) Read and scale stable isotope chronologies
+###################################################
+
+#Load data: 
+#Please download the raw data from our study in: https://www.ncei.noaa.gov/access/paleo-search/study/38660
+
+iso.o<-# add here the name of the file containing all the chronologies
+
+#Transform into time series
+iso.o.ts <- ts(iso.o[,2:ncol(iso.o)], start = iso.o[1,1], frequency = 1)
+
+#Scale data:
+det.spl <-as.data.frame(iso.o.ts)
+det.spl.sc <- det.spl
+for(i in 1:ncol(det.spl)){det.spl.sc[,i] <- scale(det.spl[,i], center = T, scale = sd(det.spl[,i],na.rm=T)/sd(iso.o.ts[,i],na.rm=T))+mean(iso.o.ts[,i],na.rm=T)}
+det.spl.sc <- ts(det.spl.sc, start = start(iso.o.ts)[1], frequency = 1)
+
+
+
+#######################################################################
+### 2) Fuzzy cluster analysis (grouping) of stable isotope chronologies
+#######################################################################
+
+#Temporal subset and scale:
+
+iso.o.20c <- window(iso.o.ts, start = 1920, end = 2000)
+iso.o.scale <- scale(iso.o.20c)
+  
+#Fuzzy clustering
+iso.o.20c.cluster <- fanny(t(iso.o.scale), k=(5), memb.exp=1.14, maxit = 10000)
+iso.o.20c.hard <- iso.o.20c.cluster$clustering
+clu.hard <- iso.o.20c.hard
+clu.fuzzy <- round(iso.o.20c.cluster$membership, digits = 2)
+rownames(  clu.fuzzy) <- colnames(iso.o.20c)
+colnames(  clu.fuzzy) <- c("K1","K2","K3","K4","K5")
+
+#Group sites
+
+  cut <- 0.75 # cutoff for enough membership
+  
+  fuzzy.all <- vector(mode = "list", length = 5)
+  fuzzy.clean <- fuzzy.all; iso.all.scaled <- fuzzy.all; iso.all.raw <- fuzzy.all; iso.all.cor <- fuzzy.all; iso.clean.scaled <- fuzzy.all; iso.clean.raw <- fuzzy.all; iso.clean.cor <- fuzzy.all
+  chrono.all <- fuzzy.all; chrono.clean <- fuzzy.all; rbar.all <- fuzzy.all; rbar.clean <- fuzzy.all; repl.all <- fuzzy.all; repl.clean <- fuzzy.all
+  
+  for(i in 1:length(fuzzy.all)){
+    
+    test.k1 <- clu.fuzzy
+    fuzzy.all[[i]] <- test.k1[clu.hard==i,]
+    iso.all.scaled[[i]] <- iso.o.scale[,clu.hard==i]
+    iso.all.raw[[i]] <- iso.o.ts[,clu.hard==i]
+    a <- ts(stabilizevariance3(iso.all.raw[[i]], WL = 30), end = end(iso.o.ts)[1], frequency = 1)
+    a <- ts(iso.all.raw[[i]], end = end(iso.o.ts)[1], frequency = 1)
+    iso.all.cor[[i]] <- cor(iso.all.scaled[[i]])
+    diag(iso.all.cor[[i]]) <- NA
+    print(round(mean(iso.all.cor[[i]],na.rm=T), digits = 2))
+    print(nrow(fuzzy.all[[i]]))
+    
+    red <- which(fuzzy.all[[i]][,i] < cut) #membership coefficient of a site to a cluster is used as weight
+    if(sum(red)>0){
+      
+      fuzzy.clean[[i]] <- fuzzy.all[[i]][-red,]
+      iso.clean.scaled[[i]] <- iso.all.scaled[[i]][,-red]
+      iso.clean.raw[[i]] <- iso.all.raw[[i]][,-red]
+      
+    } else {
+      
+      fuzzy.clean[[i]] <- fuzzy.all[[i]]
+      iso.clean.scaled[[i]] <- iso.all.scaled[[i]]
+      iso.clean.raw[[i]] <- iso.all.raw[[i]]
+      
+    }
+    
+    b <- ts(stabilizevariance3(iso.clean.raw[[i]], WL = 30), end = end(iso.o.ts)[1], frequency = 1)
+    b <- ts(iso.clean.raw[[i]], end = end(iso.o.ts)[1], frequency = 1)
+    iso.clean.cor[[i]] <- cor(iso.clean.scaled[[i]])
+    diag(iso.clean.cor[[i]]) <- NA
+    print(round(mean(iso.clean.cor[[i]],na.rm=T), digits = 2))
+    print(nrow(fuzzy.clean[[i]]))
+    
+  }
+  
+  
+  #######################################################################
+  ### 3) Principal component analysis
+  #######################################################################
+  
+  pc1.all <- vector(mode = "list",length = length(fuzzy.all))
+  pc1.clean <- pc1.all
+  pc1.common.all <- pc1.all
+  pc1.common.clean <- pc1.all
+  pc1.st <- vector(mode = "numeric", length = length(fuzzy.all))
+  pc1.en <- pc1.st
+  
+  for(i in 1:length(pc1.all)){
+    
+    a <- apply(iso.all.raw[[i]],1,sum)
+    b <- start(iso.all.raw[[i]])[1]:end(iso.all.raw[[i]])[1]
+    c <- b[is.na(a)=="FALSE"]
+    st <- c[1]; en <- c[length(c)]
+    pc1.all[[i]] <- prcomp(window(iso.all.raw[[i]], start = st, end = en), scale = TRUE)
+    pc1.common.all[[i]] <- prcomp(window(iso.all.raw[[i]], start = 1920, end = 1994), scale = TRUE)
+    
+    a <- apply(iso.clean.raw[[i]],1,sum)
+    b <- start(iso.clean.raw[[i]])[1]:end(iso.clean.raw[[i]])[1]
+    c <- b[is.na(a)=="FALSE"]
+    st <- c[1]; en <- c[length(c)]
+    pc1.st[i] <- st; pc1.en[i] <- en
+    pc1.clean[[i]] <- prcomp(window(iso.clean.raw[[i]], start = st, end = en), scale = TRUE)
+    pc1.common.clean[[i]] <- prcomp(window(iso.clean.raw[[i]], start = 1920, end = 1994), scale = TRUE)
+    
+    #print(summary(pc1.all[[i]]))
+    #print(summary(pc1.clean[[i]]))
+  }
+  
+  
+  
+  #######################################################################
+  ### 4) Additional supporting functions
+  #######################################################################
+  
+  tssampledepth <- function(x) {
+    
+    tssampledepth <- rowSums(0*x+1, na.rm=TRUE)
+    if (is.ts(x)) { tssampledepth <- ts(tssampledepth, start=start(x), frequency=frequency(x))}
+    
+    return(tssampledepth)
+  }
+  
+  
+  observationoverlap <- function(x) {
+    presencematrix <- 0*(as.matrix(x))+1
+    presencematrix[is.na(presencematrix)] <- 0
+    overlapmatrix <- t(presencematrix)%*%presencematrix
+    overlapmatrix
+  }
+  
+  
+  makechronology <- function(x) {ts(rowMeans(x,na.rm=TRUE),start=start(x)[1])}
+  
+  
+  biweightrobustmean <- function(x) {
+    
+    tempmean <- rep(NA,nrow(x))
+    sampledepth<-rowSums(0*x+1, na.rm=TRUE)
+    rawmedian<- apply(x,1,median,na.rm=TRUE)
+    x_norm <- (x-rawmedian)/apply(x,1,mad,na.rm=TRUE) # here using median absolute deviation and initial estimate with median instead, maybe more robust
+    
+    for (i in 1:3) {
+      x_norm[abs(x_norm) > 6.08] <- 6.08      # special consideration for any extreme value over 6.08 stdev away to get weight of 6.08 stdev which is zero
+      xweights <- ((1-(x_norm/6.08)^2)^2)
+      
+      for (j in 1:nrow(x)) {
+        tempmean[j] <- weighted.mean(x[j,],xweights[j,], na.rm=TRUE)
+      }
+      
+      x_norm <- (x-tempmean)/apply(x,1,mad, na.rm=TRUE) # here using median absolute deviation
+    }
+    
+    tempmean[which(sampledepth==1)]<-rawmedian[which(sampledepth==1)]
+    
+    ifelse(is.ts(x)==TRUE, robustmean <- ts(tempmean, start = start(x)[1]), robustmean <- tempmean)
+    robustmean
+  }
+  
+  
+
+  stabilizevariance3 <- function(x,WL) {
+    
+    
+    runningrforSTABILIZEVARIANCE <-function (data, win.length=WL) {
+      
+      cor.mat <- cor(data, use="pairwise.complete.obs")
+      diag(cor.mat) <- NA
+      obs.overlap.mat <- observationoverlap(data)
+      cor.mat[obs.overlap.mat < (win.length/3)] <- NA
+      MEAN.R.trunc <- mean(cor.mat, na.rm=TRUE)
+      
+      return(MEAN.R.trunc)
+    }
+    
+    mean.x <- mean(makechronology(x),na.rm=TRUE)  #pre-process the data to have a mean of zero
+    x <- x-mean.x  
+    
+    
+    samplesize <- tssampledepth(x)
+    chronology <- makechronology(x)
+    biwgt.chronology <- biweightrobustmean(x)
+    
+    correlmatrix <- cor(x,use="pairwise.complete.obs") # could insert code for using only correls with certain observation overlap
+    diag(correlmatrix) <- NA
+    MEAN.R <- mean(correlmatrix, na.rm =TRUE)
+    
+    
+    
+    
+    rbar.running <- rollapply(x,WL,runningrforSTABILIZEVARIANCE,by=1,by.column=FALSE,na.pad=TRUE)
+    rbar.running <- na.locf(rbar.running,na.rm=FALSE)
+    rbar.running <- rev(na.locf(rev(rbar.running),na.rm=FALSE))
+    rbar.running[samplesize==0] <- NA
+    
+    effsamplesize <- samplesize/(1+(samplesize-1)*rbar.running)
+    
+    effsamplesize <- pmin(effsamplesize,samplesize,na.rm=TRUE) 
+    # takes care of setting the effsamplesize to 1 when sampledepth=1
+    # and also if rbar goes negative effsamplesize gets larger than samplesize, and this brings it back down.
+    
+    simpleeffsamplesize <- samplesize/(1+(samplesize-1)*MEAN.R)
+    
+    
+    RUNNINGadjustedchronology <- chronology*(effsamplesize*MEAN.R)^.5
+    RUNNINGadjusted.biwgt.chronology  <- biwgt.chronology*(effsamplesize*MEAN.R)^.5
+    
+    
+    SIMPLEadjustedchronology <- chronology*(simpleeffsamplesize*MEAN.R)^.5
+    SIMPLEadjusted.biwgt.chronology <- biwgt.chronology*(simpleeffsamplesize*MEAN.R)^.5
+    
+    
+    everything <- ts.union(chronology,biwgt.chronology,SIMPLEadjustedchronology,SIMPLEadjusted.biwgt.chronology,RUNNINGadjustedchronology,RUNNINGadjusted.biwgt.chronology,samplesize,effsamplesize,rbar.running)
+    everything <- scale(everything,center=c(rep(-mean.x,6),rep(0,3)),scale=FALSE)#add back the mean to the dataset
+    
+    
+    return(everything)
+    
+  }
+  
+  
+  
+  
+  
+  
+  
+  
+  
